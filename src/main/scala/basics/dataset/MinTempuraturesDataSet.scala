@@ -1,18 +1,17 @@
-package basics.rdd
+package basics.dataset
 
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.SparkContext
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.types.{StructType, StringType,IntegerType, FloatType }
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.{Encoder, Encoders}
 
 import scala.math.min
 
-object MinTempuratures {
-  def parseLine(line: String): (String, String, Float) = {
-    val fields = line.split(",")
-    val stationID = fields(0)
-    val entryType = fields(2)
-    val tempurature = fields(3).toFloat * 0.1f * (90f / 5.0f) + 32.0f
-    (stationID, entryType, tempurature)
-  }
+object MinTempuraturesDataSet {
+
+  case class temperature( stationsID :  String, date : Int, measure_type : String, temperature : Float)
 
   def main(args: Array[String]): Unit = {
 
@@ -20,29 +19,38 @@ object MinTempuratures {
     Logger.getLogger("org").setLevel(Level.ERROR)
 
     // Create a SparkContext using every core of the local machine
-    val sc = new SparkContext("local[*]", "MinTemperatures")
+    val spark = SparkSession.builder.appName("MinTemuratures").master("local[*]").getOrCreate()
 
-    // Read each line of input data
-    val lines = sc.textFile("data/1800.csv")
+    val tempuratureSchema = new StructType()
+      .add("stationID", StringType, nullable = true)
+      .add("date", IntegerType, nullable = true)
+      .add("measure_type", StringType, nullable = true)
+      .add("temperature", FloatType, nullable = true)
 
-    // Convert to (stationID, entryType, temperature) tuples
-    val rdd = lines.map(parseLine)
 
+    // Read the file as dataset
+    import spark.implicits._
+    val ds = spark.read.schema(tempuratureSchema).csv("data/1800.csv")//.as[temperature]
     // Filter out all but TMIN entries
-    val filteredData = rdd.filter(x => x._2 == "TMIN")
+    val minTemps = ds.filter( $"measure_type" === "TMIN")
 
-    // Convert to (stationID, temperature)
-    val stationTemps = filteredData.map(x => (x._1, x._3.toFloat))
+    // Select only (stationID, temperature)
+    val stationTemps = minTemps.select("stationID", "temperature")
 
-    // Reduce by stationID retaining the minimum temperature found
-    val minTempsByStation = stationTemps.reduceByKey((x, y) => min(x, y))
 
+    // Aggregate to find minimum temperature for every station
+    val minTempsByStation = stationTemps.groupBy("stationID").min("temperature")
+    minTempsByStation.show()
+    // Convert temperature to fahrenheit and sort the dataset
+    val minTempsByStationF = minTempsByStation.withColumn("temperature", round($"min(temperature)" * 0.1f * (9.0f / 5.0f) + 32.0f, 2))
+      .select("stationID", "temperature").sort("temperature")
+    minTempsByStationF.show()
     // Collect, format, and print the results
-    val results = minTempsByStation.collect()
+    val results = minTempsByStationF.collect()
 
-    for (result <- results.sorted) {
-      val station = result._1
-      val temp = result._2
+    for (result <- results) {
+      val station = result(0)
+      val temp = result(1).asInstanceOf[Float]
       val formattedTemp = f"$temp%.2f F"
       println(s"$station minimum temperature: $formattedTemp")
     }

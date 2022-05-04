@@ -1,80 +1,57 @@
 package advanced
 
 import org.apache.log4j.{Level, Logger}
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.functions.{asc, col, udf}
-import org.apache.spark.sql.functions.udf
+import org.apache.spark.sql.{SparkSession, Encoders}
+import org.apache.spark.sql.functions.{sum,asc, col, split, udf, size}
 import org.apache.spark.sql.types.{IntegerType, LongType, StringType, StructType}
 
 import scala.io.{Codec, Source}
+
 /*Find movie wit the most ratings*/
-object PopularMoviesNicerDataset {
+object MostPopularSuperheroDataset {
 
-  final case class Movies(userID : Int, MovieID :  Int, rating : Int, timestamp : Long)
-
-  /* Load up a Map of Movie IDs to movie names. */
-  def loadMovieNames(): Map[Int, String] = {
-  // Handle character encoding issues :
-  implicit val codec : Codec = Codec("ISO-8859-1") // this the current encoding of u.item, not UTF-8.
-  // Create a Map of Ints to String. and populate it from u.item
-  var movieNames: Map[Int, String] = Map()
-  val lines = Source.fromFile("data/movie/u.item")
-  for( line <- lines.getLines()){
-    val fields = line.split("|")
-    if( fields.length > 1){
-      movieNames += (fields(0).toInt -> fields(1))
-    }
-  }
-    lines.close()
-    movieNames
-  }
+  case class SuperHeroNames(id : Int, name: String)
+  case class SuperHero(value : String)
 
   def main(args : Array[String]): Unit ={
-
-
-
     Logger.getLogger("org").setLevel(Level.ERROR)
 
-    val spark = SparkSession.builder.appName("PopularMoviesNacer").master("local[*]").getOrCreate()
+    val spark = SparkSession.builder.appName("MostPopularSuperhero").master("local[*]").getOrCreate()
 
-    val nameDist = spark.sparkContext.broadcast(loadMovieNames())
+    // Create schema when reading
+    val superHeroNamesSchema = new StructType()
+      .add("id",IntegerType,nullable = true)
+      .add("name",StringType,nullable = true)
 
-    // Create schema when reading u.data
-    val movieSchema =  new StructType()
-      .add("userID",IntegerType,nullable = true)
-      .add("movieID",IntegerType,nullable = true)
-      .add("rating",IntegerType,nullable = true)
-      .add("timestamp",LongType,nullable = true)
+    // Build up a hero ID -> name Dataset
+    import spark.implicits._
+    val names = spark.read.option("sep", " ").schema(superHeroNamesSchema).csv("data/movie/Marvel-names.txt") //.as[SuperHeroNames]
 
-    // Load up movie data as dataset
-    import spark.implicits.*
-    val movies = spark.read
-      .option("sep", "\t")
-      .schema(movieSchema).csv("data/movie/u.data")
-      //.as[Movies]
+    val lines = spark.read.text("data/movie/Marvel-graph.txt").as[String] //.as[SuperHero]
+    lines.printSchema()
 
-    val movieCounts = movies.groupBy("movieID").count()
+    val connections = lines
+          .withColumn("id", split(col("value"), " ")(0))
+          .withColumn("connections", size(split(col("value"), " ")) -1)
+          .groupBy("id").agg(sum("connections").alias("connections"))
 
-    // Create a UDF to look up movie names from our shared Map variable.
-    // We start by declaring an anonymous function in scala
-    val lookupName : Int => String = (movieID: Int) =>{
-      nameDist.value(movieID)
-    }
-    // Then wrap it with a UDF
-    val lookupNameUDF = udf(lookupName)
+    connections.show()
 
-    // Add a movieTitle column using our new UDF
-    val moviesWithNames = movieCounts.withColumn("movieTitle", lookupNameUDF(col("movieID")))
+    val mostPopular =  connections.sort($"connections".desc).first()
 
-   // Sort the results
-   val sortedMoviesWithNames  = moviesWithNames.sort("count")
-
-    // Shows the results without truncating it
-    sortedMoviesWithNames.show(sortedMoviesWithNames.count.toInt, truncate = false)
+    println("mostPopular : "+ mostPopular)
 
 
-    // Stop the session
-    spark.stop()
+    val mostPopularName = names
+          .filter($"id" === mostPopular(0))
+          .select("name")
+          .first()
+
+        println(s"${mostPopularName(0)} is the most popular superhero with ${mostPopular(1)} co-appearances.")
+
+        // Stop the session
+        spark.stop()
+
   }
 
 }
