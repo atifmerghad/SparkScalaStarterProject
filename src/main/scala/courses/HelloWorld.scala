@@ -1,0 +1,5 @@
+package courses
+
+object HelloWorld {
+
+}
